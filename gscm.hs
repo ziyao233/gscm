@@ -1,5 +1,9 @@
+module Main where
+
 import Control.Monad
 import Text.ParserCombinators.Parsec hiding (spaces)
+import System.IO (readFile)
+import System.Environment (getArgs)
 
 data SExpr = SAtom String
            | SList [SExpr]
@@ -69,3 +73,25 @@ parseSExpr =  parseAtom
           <|> parseString
           <|> parseQuoted
           <|> (try parseList <|> parseDottedList)
+
+eval :: String -> IO ()
+eval src =
+  case parse parseSExpr "schemesrc" src of
+    Left e  -> putStrLn $ show e
+    Right v -> putStrLn $ show v
+
+repl :: IO ()
+repl = do
+  line <- getLine
+  if line == ":exit" || line == "\EOT"
+  then return ()
+  else (eval line) >> repl
+
+evalFile :: String -> IO ()
+evalFile path = (readFile path) >>= eval
+
+main = do
+  args <- getArgs
+  case args of
+    []    -> repl
+    (x:_) -> evalFile x
