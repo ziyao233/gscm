@@ -4,10 +4,10 @@ import Control.Monad
 import Text.ParserCombinators.Parsec hiding (spaces)
 import System.IO (readFile)
 import System.Environment (getArgs)
+import Data.Map (Map, fromList, (!))
 
 data SExpr = SAtom String
            | SList [SExpr]
-           | SDottedList [SExpr] SExpr
            | SNumber Int
            | SString String
            | SBool Bool
@@ -15,9 +15,6 @@ data SExpr = SAtom String
 instance Show SExpr where
   show (SAtom xs)     = xs
   show (SList xs)     = "(" ++ (unwords $ map show xs) ++ ")"
-  show (SDottedList xs x)
-                      = "(" ++ (unwords $ map show xs) ++ " . " ++
-                        (show x) ++ ")"
   show (SNumber x)    = show x
   show (SString xs)   = "\"" ++ xs ++ "\""
   show (SBool True)   = "#t"
@@ -43,14 +40,6 @@ parseList = do
   char ')'
   return $ SList list
 
-parseDottedList :: Parser SExpr
-parseDottedList = do
-  char '('
-  list <- endBy parseSExpr spaces
-  last <- char '.' >> spaces >> parseSExpr
-  char ')'
-  return $ SDottedList list last
-
 parseNumber :: Parser SExpr
 parseNumber = fmap (SNumber . read) $ many1 digit
 
@@ -72,13 +61,46 @@ parseSExpr =  parseAtom
           <|> parseNumber
           <|> parseString
           <|> parseQuoted
-          <|> (try parseList <|> parseDottedList)
+          <|> parseList
+
+pIsNumber [SNumber _] = SBool True
+pIsNumber _ = SBool False
+pIsBoolean [SBool _] = SBool True
+pIsBoolean _ = SBool False
+pIsString [SString _] = SBool True
+pIsString _ = SBool False
+pIsList [SList _] = SBool True
+pIsList _ = SBool False
+
+primitivesList :: [(String, [SExpr] -> SExpr)]
+primitivesList =
+  [
+    ("number?", pIsNumber),
+    ("boolean?", pIsBoolean),
+    ("string?", pIsString),
+    ("list?", pIsList)
+  ]
+primitivesMap :: Map String ([SExpr] -> SExpr)
+primitivesMap = fromList primitivesList
+
+evalFunc :: String -> [SExpr] -> SExpr
+evalFunc f as =
+  (primitivesMap ! f) as'
+  where as' = map evalValue as
+
+evalValue :: SExpr -> SExpr
+evalValue v@(SAtom _) = v
+evalValue v@(SNumber _) = v
+evalValue v@(SString _) = v
+evalValue v@(SBool _) = v
+evalValue (SList [SAtom "quote", v]) = v
+evalValue (SList ((SAtom f):as)) = evalFunc f as
 
 eval :: String -> IO ()
 eval src =
   case parse parseSExpr "schemesrc" src of
     Left e  -> putStrLn $ show e
-    Right v -> putStrLn $ show v
+    Right v -> putStrLn $ show $ evalValue v
 
 repl :: IO ()
 repl = do
