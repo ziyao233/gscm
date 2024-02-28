@@ -5,6 +5,7 @@ import Text.ParserCombinators.Parsec hiding (spaces)
 import System.IO (readFile)
 import System.Environment (getArgs)
 import Data.Map (Map, fromList, (!))
+import Data.List (foldl1')
 
 data SExpr = SAtom String
            | SList [SExpr]
@@ -63,6 +64,11 @@ parseSExpr =  parseAtom
           <|> parseQuoted
           <|> parseList
 
+extractNum :: SExpr -> Int
+extractNum (SNumber n) = n
+numBinOp :: (Int -> Int -> Int) -> [SExpr] -> SExpr
+numBinOp f as = SNumber $ foldl1' f $ map extractNum as
+
 pIsNumber [SNumber _] = SBool True
 pIsNumber _ = SBool False
 pIsBoolean [SBool _] = SBool True
@@ -71,6 +77,12 @@ pIsString [SString _] = SBool True
 pIsString _ = SBool False
 pIsList [SList _] = SBool True
 pIsList _ = SBool False
+pAdd = numBinOp (+)
+pSub = numBinOp (-)
+pMul = numBinOp (*)
+pDiv = numBinOp div
+pMod = numBinOp mod
+pStringAppend [SString a, SString b] = SString $ a ++ b
 
 primitivesList :: [(String, [SExpr] -> SExpr)]
 primitivesList =
@@ -78,7 +90,13 @@ primitivesList =
     ("number?", pIsNumber),
     ("boolean?", pIsBoolean),
     ("string?", pIsString),
-    ("list?", pIsList)
+    ("list?", pIsList),
+    ("+", pAdd),
+    ("-", pSub),
+    ("*", pMul),
+    ("/", pDiv),
+    ("mod", pMod),
+    ("string-append", pStringAppend)
   ]
 primitivesMap :: Map String ([SExpr] -> SExpr)
 primitivesMap = fromList primitivesList
