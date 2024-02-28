@@ -4,7 +4,8 @@ import Control.Monad
 import Text.ParserCombinators.Parsec hiding (spaces)
 import System.IO (readFile)
 import System.Environment (getArgs)
-import Data.Map (Map, fromList, (!))
+import Data.Either
+import Data.Map (Map, fromList, lookup)
 import Data.List (foldl1')
 
 data SExpr = SAtom String
@@ -64,27 +65,46 @@ parseSExpr =  parseAtom
           <|> parseQuoted
           <|> parseList
 
-extractNum :: SExpr -> Int
-extractNum (SNumber n) = n
-numBinOp :: (Int -> Int -> Int) -> [SExpr] -> SExpr
-numBinOp f as = SNumber $ foldl1' f $ map extractNum as
+data EvalError = ArgMismatch String
+               | IllegalStruct String
+               | UnknownError
+               | UnbindedVar String
+instance Show EvalError where
+  show (ArgMismatch m) = "Argument(s) mismatch: " ++ m
+  show (IllegalStruct m) = "Illegal Struct: " ++ m
+  show (UnbindedVar m) = "Unbinded variable: " ++ m
+  show (UnknownError) = "Unknown error"
 
-pIsNumber [SNumber _] = SBool True
-pIsNumber _ = SBool False
-pIsBoolean [SBool _] = SBool True
-pIsBoolean _ = SBool False
-pIsString [SString _] = SBool True
-pIsString _ = SBool False
-pIsList [SList _] = SBool True
-pIsList _ = SBool False
+extractNum :: SExpr -> Either EvalError Int
+extractNum (SNumber n) = return n
+extractNum _ = Left $ ArgMismatch "expect number"
+numBinOp :: (Int -> Int -> Int) -> [SExpr] -> Either EvalError SExpr
+numBinOp f as = do
+  ns <- mapM extractNum as
+  return $ SNumber $ foldl1' f ns
+
+errOneArg = Left $ ArgMismatch "expect one argument"
+pIsNumber [SNumber _] = return $ SBool True
+pIsNumber [_] = return $ SBool False
+pIsNumber _ = errOneArg
+pIsBoolean [SBool _] = return $ SBool True
+pIsBoolean [_] = return $ SBool False
+pIsBoolean _ = errOneArg
+pIsString [SString _] = return $ SBool True
+pIsString [_] = return $ SBool False
+pIsString _ = errOneArg
+pIsList [SList _] = return $ SBool True
+pIsList [_] = return $ SBool False
+pIsList _ = errOneArg
 pAdd = numBinOp (+)
 pSub = numBinOp (-)
 pMul = numBinOp (*)
 pDiv = numBinOp div
 pMod = numBinOp mod
-pStringAppend [SString a, SString b] = SString $ a ++ b
+pStringAppend [SString a, SString b] = return $ SString $ a ++ b
+pStringAppend _ = Left $ ArgMismatch "expect (string, string)"
 
-primitivesList :: [(String, [SExpr] -> SExpr)]
+primitivesList :: [(String, [SExpr] -> Either EvalError SExpr)]
 primitivesList =
   [
     ("number?", pIsNumber),
@@ -98,27 +118,30 @@ primitivesList =
     ("mod", pMod),
     ("string-append", pStringAppend)
   ]
-primitivesMap :: Map String ([SExpr] -> SExpr)
+primitivesMap :: Map String ([SExpr] -> Either EvalError SExpr)
 primitivesMap = fromList primitivesList
 
-evalFunc :: String -> [SExpr] -> SExpr
-evalFunc f as =
-  (primitivesMap ! f) as'
-  where as' = map evalValue as
+evalFunc :: String -> [SExpr] -> Either EvalError SExpr
+evalFunc f as = do
+  as' <- mapM evalValue as
+  case Data.Map.lookup f primitivesMap of
+    Nothing -> Left $ UnbindedVar f
+    Just p  -> p as'
 
-evalValue :: SExpr -> SExpr
-evalValue v@(SAtom _) = v
-evalValue v@(SNumber _) = v
-evalValue v@(SString _) = v
-evalValue v@(SBool _) = v
-evalValue (SList [SAtom "quote", v]) = v
+evalValue :: SExpr -> Either EvalError SExpr
+evalValue v@(SAtom _) = return v
+evalValue v@(SNumber _) = return v
+evalValue v@(SString _) = return v
+evalValue v@(SBool _) = return v
+evalValue (SList [SAtom "quote", v]) = return v
 evalValue (SList ((SAtom f):as)) = evalFunc f as
+evalValue _ = Left $ IllegalStruct "illegal struct"
 
 eval :: String -> IO ()
 eval src =
   case parse parseSExpr "schemesrc" src of
     Left e  -> putStrLn $ show e
-    Right v -> putStrLn $ show $ evalValue v
+    Right v -> putStrLn $ either show show $ evalValue v
 
 repl :: IO ()
 repl = do
