@@ -13,6 +13,7 @@ data SExpr = SAtom String
            | SNumber Int
            | SString String
            | SBool Bool
+           | SPrim PrimFunc
 
 instance Show SExpr where
   show (SAtom xs)     = xs
@@ -21,6 +22,7 @@ instance Show SExpr where
   show (SString xs)   = "\"" ++ xs ++ "\""
   show (SBool True)   = "#t"
   show (SBool False)  = "#f"
+  show (SPrim _)      = "<primitive>"
 
 spaces :: Parser ()
 spaces = skipMany1 $ oneOf "\r\n\t "
@@ -104,7 +106,8 @@ pMod = numBinOp mod
 pStringAppend [SString a, SString b] = return $ SString $ a ++ b
 pStringAppend _ = Left $ ArgMismatch "expect (string, string)"
 
-primitivesList :: [(String, [SExpr] -> Either EvalError SExpr)]
+type PrimFunc = [SExpr] -> Either EvalError SExpr
+primitivesList :: [(String, PrimFunc)]
 primitivesList =
   [
     ("number?", pIsNumber),
@@ -121,20 +124,26 @@ primitivesList =
 primitivesMap :: Map String ([SExpr] -> Either EvalError SExpr)
 primitivesMap = fromList primitivesList
 
+getPrim :: String -> Maybe PrimFunc
+getPrim f = Data.Map.lookup f primitivesMap
+
 evalFunc :: String -> [SExpr] -> Either EvalError SExpr
 evalFunc f as = do
   as' <- mapM evalValue as
-  case Data.Map.lookup f primitivesMap of
+  case getPrim f of
     Nothing -> Left $ UnbindedVar f
     Just p  -> p as'
 
 evalValue :: SExpr -> Either EvalError SExpr
-evalValue v@(SAtom _) = return v
+evalValue (SAtom s) = case getPrim s of
+                        Nothing -> Left $ UnbindedVar s
+                        Just p  -> return $ SPrim p
 evalValue v@(SNumber _) = return v
 evalValue v@(SString _) = return v
 evalValue v@(SBool _) = return v
 evalValue (SList [SAtom "quote", v]) = return v
 evalValue (SList ((SAtom f):as)) = evalFunc f as
+evalValue (SList ((SPrim p):as)) = mapM evalValue as >>= p
 evalValue _ = Left $ IllegalStruct "illegal struct"
 
 eval :: String -> IO ()
