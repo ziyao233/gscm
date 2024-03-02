@@ -9,6 +9,7 @@ import System.Environment (getArgs)
 import Data.Either
 import Data.IORef
 import qualified Data.Map as M
+import Data.Tuple (uncurry)
 import Data.List (foldl1')
 
 data SExpr = SAtom String
@@ -17,6 +18,7 @@ data SExpr = SAtom String
            | SString String
            | SBool Bool
            | SPrim PrimFunc
+           | SFunc [String] SExpr Env
            | SNull
 
 instance Show SExpr where
@@ -28,6 +30,7 @@ instance Show SExpr where
   show (SBool False)  = "#f"
   show (SPrim _)      = "<primitive>"
   show SNull          = "(null)"
+  show (SFunc x _ _)  = "lambda " ++ (show $ SList $ map SAtom x)
 
 spaces :: Parser ()
 spaces = skipMany1 $ oneOf "\r\n\t "
@@ -180,13 +183,30 @@ defVar envRef n v = do
   then liftThrowEError $ Left $ AlreadyDefined n
   else liftIO $ (return $ M.insert n v env) >>= writeIORef envRef >> return v
 
+bindArgs :: Env -> [String] -> [SExpr] -> IOThrowEError Env
+bindArgs envRef ns vs = do
+  env <- liftIO $ readIORef envRef
+  newEnv <- foldM setTo env (zip ns vs)
+  liftIO $ newIORef newEnv
+  where setTo m (k, v) = return $ M.alter (const $ Just v) k m
+
+evalSFunc :: Env -> SExpr -> [SExpr] -> IOThrowEError SExpr
+evalSFunc envRef (SFunc ns body fEnv) as
+ | (length ns) /= (length as) = liftThrowEError $ Left $
+     ArgMismatch $ "want " ++ (show $ length ns) ++ " arguments"
+ | otherwise = do
+     newEnvRef <- bindArgs fEnv ns as
+     evalValue newEnvRef body
+
 evalFunc :: Env -> String -> [SExpr] -> IOThrowEError SExpr
 evalFunc env f as = do
   as' <- mapM (evalValue env) as
   v <- getVar env f
-  liftThrowEError $ case v of
-    SPrim p -> p as'
-    _       -> Left $ TypeMismatch $ f ++ " is not a valid function"
+  case v of
+    SPrim p         -> liftThrowEError $ p as'
+    f@(SFunc _ _ _) -> evalSFunc env f as'
+    _               -> liftThrowEError $ Left $
+                         TypeMismatch $ f ++ " is not a valid function"
 
 evalValue :: Env -> SExpr -> IOThrowEError SExpr
 evalValue env (SAtom s) = getVar env s
@@ -205,6 +225,11 @@ evalValue env (SList [SAtom "if", cond, t, f]) =
        otherwise   -> evalValue env t
 evalValue env (SList ((SAtom "if"):_)) =
   liftThrowEError $ Left $ IllegalStruct "if"
+evalValue env (SList [SAtom "lambda", SList as@((SAtom _):_), body]) =
+  return $ SFunc (map toString as) body env
+  where toString (SAtom s) = s
+evalValue env (SList ((SAtom "lambda"):_)) =
+  liftThrowEError $ Left $ IllegalStruct "lambda"
 evalValue env (SList ((SAtom f):as)) = evalFunc env f as
 evalValue env (SList ((SPrim p):as)) =
   mapM (evalValue env) as >>= liftThrowEError . p
