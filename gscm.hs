@@ -99,18 +99,20 @@ instance MonadTrans (EitherT a) where
 instance MonadIO (EitherT a IO) where
   liftIO = lift
 
-type IOEither = EitherT EvalError IO
-liftEither :: Either EvalError a -> IOEither a
-liftEither = either (EitherT . return . Left) (return)
+type ThrowEError = Either EvalError
+
+type IOThrowEError = EitherT EvalError IO
+liftThrowEError :: ThrowEError a -> IOThrowEError a
+liftThrowEError = either (EitherT . return . Left) (return)
 
 type Env = IORef (M.Map String SExpr)
 defaultEnv :: IO Env
 defaultEnv = newIORef primitivesMap
 
-extractNum :: SExpr -> Either EvalError Int
+extractNum :: SExpr -> ThrowEError Int
 extractNum (SNumber n) = return n
 extractNum _ = Left $ ArgMismatch "expect number"
-numBinOp :: (Int -> Int -> Int) -> [SExpr] -> Either EvalError SExpr
+numBinOp :: (Int -> Int -> Int) -> [SExpr] -> ThrowEError SExpr
 numBinOp f as = do
   ns <- mapM extractNum as
   return $ SNumber $ foldl1' f ns
@@ -136,7 +138,7 @@ pMod = numBinOp mod
 pStringAppend [SString a, SString b] = return $ SString $ a ++ b
 pStringAppend _ = Left $ ArgMismatch "expect (string, string)"
 
-type PrimFunc = [SExpr] -> Either EvalError SExpr
+type PrimFunc = [SExpr] -> ThrowEError SExpr
 primitivesList :: [(String, PrimFunc)]
 primitivesList =
   [
@@ -159,30 +161,30 @@ isBound envRef n = do
   env <- readIORef envRef
   return $ M.member n env
 
-getVar :: Env -> String -> IOEither SExpr
+getVar :: Env -> String -> IOThrowEError SExpr
 getVar envRef n = do
   env <- liftIO $ readIORef envRef
-  liftEither $ case M.lookup n env of
+  liftThrowEError $ case M.lookup n env of
     Nothing -> Left $ UnboundVar n
     Just v  -> return v
 
-defVar :: Env -> String -> SExpr -> IOEither SExpr
+defVar :: Env -> String -> SExpr -> IOThrowEError SExpr
 defVar envRef n v = do
   env <- liftIO $ readIORef envRef
   b <- liftIO $ isBound envRef n
   if b
-  then liftEither $ Left $ AlreadyDefined n
+  then liftThrowEError $ Left $ AlreadyDefined n
   else liftIO $ (return $ M.insert n v env) >>= writeIORef envRef >> return v
 
-evalFunc :: Env -> String -> [SExpr] -> IOEither SExpr
+evalFunc :: Env -> String -> [SExpr] -> IOThrowEError SExpr
 evalFunc env f as = do
   as' <- mapM (evalValue env) as
   v <- getVar env f
-  liftEither $ case v of
+  liftThrowEError $ case v of
     SPrim p -> p as'
     _       -> Left $ IllegalStruct $ f ++ " is not a valid function"
 
-evalValue :: Env -> SExpr -> IOEither SExpr
+evalValue :: Env -> SExpr -> IOThrowEError SExpr
 evalValue env (SAtom s) = getVar env s
 evalValue _ v@(SNumber _) = return v
 evalValue _ v@(SString _) = return v
@@ -191,10 +193,11 @@ evalValue _ (SList [SAtom "quote", v]) = return v
 evalValue env (SList [SAtom "def", SAtom n, v]) =
   evalValue env v >>= defVar env n
 evalValue env (SList ((SAtom "def"):_)) =
-  liftEither $ Left $ IllegalStruct "definition"
+  liftThrowEError $ Left $ IllegalStruct "definition"
 evalValue env (SList ((SAtom f):as)) = evalFunc env f as
-evalValue env (SList ((SPrim p):as)) = mapM (evalValue env) as >>= liftEither . p
-evalValue _ _ = liftEither $ Left $ IllegalStruct "illegal struct"
+evalValue env (SList ((SPrim p):as)) =
+  mapM (evalValue env) as >>= liftThrowEError . p
+evalValue _ _ = liftThrowEError $ Left $ IllegalStruct "illegal struct"
 
 evalAndPrint :: Env -> String -> IO ()
 evalAndPrint env src =
