@@ -48,7 +48,8 @@ parseAtom = do
 parseList :: Parser SExpr
 parseList = do
   char '('
-  list <- sepBy parseSExpr spaces
+  optional spaces
+  list <- sepEndBy parseSExpr spaces
   char ')'
   return $ SList list
 
@@ -283,11 +284,14 @@ evalValue env (SList xs) = do
   evalFunc env (head xs') (tail xs')
 evalValue _ _ = liftThrowEError $ Left $ IllegalStruct "illegal struct"
 
-evalAndPrint :: Env -> String -> IO ()
-evalAndPrint env src =
+eval :: Env -> String -> IO (ThrowEError SExpr)
+eval env src =
   case parse parseSExpr "schemesrc" src of
-    Left e  -> putStrLn $ show e
-    Right v -> runEitherT (evalValue env v) >>= return . either show show >>= putStrLn
+    Left e  -> return $ Left $ OtherError $ show e
+    Right v -> runEitherT (evalValue env v)
+
+evalAndPrint :: Env -> String -> IO ()
+evalAndPrint env src = eval env src >>= putStrLn . either show show
 
 doRepl :: Env -> IO ()
 doRepl envRef = do
@@ -302,7 +306,10 @@ repl = defaultEnv >>= doRepl
 evalFile :: String -> IO ()
 evalFile path = do
   src <- readFile path
-  defaultEnv >>= flip evalAndPrint src
+  r <- defaultEnv >>= flip eval src
+  case r of
+    Left e    -> putStrLn $ show e
+    otherwise -> return ()
 
 main = do
   args <- getArgs
