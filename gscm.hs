@@ -1,11 +1,14 @@
 module Main where
 
 import Control.Monad
+import Control.Monad.Trans (liftIO, MonadIO)
+import Control.Monad.Trans.Class
 import Text.ParserCombinators.Parsec hiding (spaces)
 import System.IO (readFile)
 import System.Environment (getArgs)
 import Data.Either
-import Data.Map (Map, fromList, lookup)
+import Data.IORef
+import qualified Data.Map as M
 import Data.List (foldl1')
 
 data SExpr = SAtom String
@@ -71,11 +74,38 @@ data EvalError = ArgMismatch String
                | IllegalStruct String
                | UnknownError
                | UnbindedVar String
+               | AlreadyDefined String
 instance Show EvalError where
   show (ArgMismatch m) = "Argument(s) mismatch: " ++ m
   show (IllegalStruct m) = "Illegal Struct: " ++ m
   show (UnbindedVar m) = "Unbinded variable: " ++ m
+  show (AlreadyDefined m) = "Variable already defined: " ++ m
   show (UnknownError) = "Unknown error"
+
+newtype EitherT a m b = EitherT { runEitherT :: m (Either a b) }
+instance Monad m => Monad (EitherT a m) where
+  x >>= f = EitherT $ do
+    v <- runEitherT x
+    case v of
+      Left l      -> return $ Left l
+      Right r     -> runEitherT $ f r
+instance Monad m => Applicative (EitherT a m) where
+  pure = EitherT . return . Right
+  (<*>) = ap
+instance Monad m => Functor (EitherT a m) where
+  fmap = liftM
+instance MonadTrans (EitherT a) where
+  lift = EitherT . (liftM Right)
+instance MonadIO (EitherT a IO) where
+  liftIO = lift
+
+type IOEither = EitherT EvalError IO
+liftEither :: Either EvalError a -> IOEither a
+liftEither = either (EitherT . return . Left) (return)
+
+type Env = IORef (M.Map String SExpr)
+defaultEnv :: IO Env
+defaultEnv = newIORef primitivesMap
 
 extractNum :: SExpr -> Either EvalError Int
 extractNum (SNumber n) = return n
@@ -121,46 +151,69 @@ primitivesList =
     ("mod", pMod),
     ("string-append", pStringAppend)
   ]
-primitivesMap :: Map String ([SExpr] -> Either EvalError SExpr)
-primitivesMap = fromList primitivesList
+primitivesMap :: M.Map String SExpr
+primitivesMap = M.map SPrim $ M.fromList primitivesList
 
-getPrim :: String -> Maybe PrimFunc
-getPrim f = Data.Map.lookup f primitivesMap
+isBinded :: Env -> String -> IO Bool
+isBinded envRef n = do
+  env <- readIORef envRef
+  return $ M.member n env
 
-evalFunc :: String -> [SExpr] -> Either EvalError SExpr
-evalFunc f as = do
-  as' <- mapM evalValue as
-  case getPrim f of
-    Nothing -> Left $ UnbindedVar f
-    Just p  -> p as'
+getVar :: Env -> String -> IOEither SExpr
+getVar envRef n = do
+  env <- liftIO $ readIORef envRef
+  liftEither $ case M.lookup n env of
+    Nothing -> Left $ UnbindedVar n
+    Just v  -> return v
 
-evalValue :: SExpr -> Either EvalError SExpr
-evalValue (SAtom s) = case getPrim s of
-                        Nothing -> Left $ UnbindedVar s
-                        Just p  -> return $ SPrim p
-evalValue v@(SNumber _) = return v
-evalValue v@(SString _) = return v
-evalValue v@(SBool _) = return v
-evalValue (SList [SAtom "quote", v]) = return v
-evalValue (SList ((SAtom f):as)) = evalFunc f as
-evalValue (SList ((SPrim p):as)) = mapM evalValue as >>= p
-evalValue _ = Left $ IllegalStruct "illegal struct"
+defVar :: Env -> String -> SExpr -> IOEither SExpr
+defVar envRef n v = do
+  env <- liftIO $ readIORef envRef
+  b <- liftIO $ isBinded envRef n
+  if b
+  then liftEither $ Left $ AlreadyDefined n
+  else liftIO $ (return $ M.insert n v env) >>= writeIORef envRef >> return v
 
-eval :: String -> IO ()
-eval src =
+evalFunc :: Env -> String -> [SExpr] -> IOEither SExpr
+evalFunc env f as = do
+  as' <- mapM (evalValue env) as
+  v <- getVar env f
+  liftEither $ case v of
+    SPrim p -> p as'
+    _       -> Left $ IllegalStruct $ f ++ " is not a valid function"
+
+evalValue :: Env -> SExpr -> IOEither SExpr
+evalValue env (SAtom s) = getVar env s
+evalValue _ v@(SNumber _) = return v
+evalValue _ v@(SString _) = return v
+evalValue _ v@(SBool _) = return v
+evalValue _ (SList [SAtom "quote", v]) = return v
+evalValue env (SList [SAtom "def", SAtom n, v]) =
+  evalValue env v >>= defVar env n
+evalValue env (SList ((SAtom f):as)) = evalFunc env f as
+evalValue env (SList ((SPrim p):as)) = mapM (evalValue env) as >>= liftEither . p
+evalValue _ _ = liftEither $ Left $ IllegalStruct "illegal struct"
+
+evalAndPrint :: Env -> String -> IO ()
+evalAndPrint env src =
   case parse parseSExpr "schemesrc" src of
     Left e  -> putStrLn $ show e
-    Right v -> putStrLn $ either show show $ evalValue v
+    Right v -> runEitherT (evalValue env v) >>= return . either show show >>= putStrLn
 
-repl :: IO ()
-repl = do
+doRepl :: Env -> IO ()
+doRepl envRef = do
   line <- getLine
   if line == ":exit" || line == "\EOT"
   then return ()
-  else (eval line) >> repl
+  else evalAndPrint envRef line >> doRepl envRef
+
+repl :: IO ()
+repl = defaultEnv >>= doRepl
 
 evalFile :: String -> IO ()
-evalFile path = (readFile path) >>= eval
+evalFile path = do
+  src <- readFile path
+  defaultEnv >>= flip evalAndPrint src
 
 main = do
   args <- getArgs
