@@ -158,9 +158,25 @@ pCdr [SList (_:xs)] = return $ SList xs
 pCdr [SList []] = Left $ OtherError "cdr is applied to a null list"
 pCdr _ = Left $ ArgMismatch "expect (list)"
 
-type PrimFunc = [SExpr] -> ThrowEError SExpr
-primitivesList :: [(String, PrimFunc)]
-primitivesList =
+pDisplay [v] = liftIO $ (putStr (show v)) >> (return $ SBool True)
+pDisplay _ = liftThrowEError $ Left $ ArgMismatch "expect (any)"
+pRead [] = do
+  s <- liftIO $ getLine
+  case parse parseSExpr "<input>" s of
+    Left e  -> liftThrowEError $ Left $ OtherError $ show e
+    Right e -> return e
+pRead _ = liftThrowEError $ Left $ ArgMismatch "expect ()"
+pReadLine [] = liftIO $ (getLine >>= return . SString)
+pReadLine _ = liftThrowEError $ Left $ ArgMismatch "expect ()"
+pWriteLine [SString s] = liftIO $ (putStrLn s) >> (return $ SBool True)
+pWriteLine _ = liftThrowEError $ Left $ ArgMismatch "expect (string)"
+pNewline [] = liftIO $ (putChar '\n') >> (return $ SBool True)
+pNewLine _ = liftThrowEError $ Left $ ArgMismatch "expect ()"
+
+type PrimFunc = [SExpr] -> IOThrowEError SExpr
+type PurePrimFunc = [SExpr] -> ThrowEError SExpr
+purePrimitivesList :: [(String, PurePrimFunc)]
+purePrimitivesList =
   [
     ("number?", pIsNumber),
     ("boolean?", pIsBoolean),
@@ -177,6 +193,18 @@ primitivesList =
     ("car", pCar),
     ("cdr", pCdr)
   ]
+liftPurePrimFunc :: PurePrimFunc -> PrimFunc
+liftPurePrimFunc = (liftThrowEError .)
+primitivesList :: [(String, PrimFunc)]
+primitivesList =
+  [
+    ("display", pDisplay),
+    ("read", pRead),
+    ("read-line", pReadLine),
+    ("write-line", pWriteLine),
+    ("newline", pNewline)
+  ] ++ pures
+  where pures = map (\(n, f) -> (n, liftPurePrimFunc f)) purePrimitivesList
 primitivesMap :: M.Map String SExpr
 primitivesMap = M.map SPrim $ M.fromList primitivesList
 
@@ -217,7 +245,7 @@ evalSFunc envRef (SFunc ns body fEnv) as
 
 evalFunc :: Env -> SExpr -> [SExpr] -> IOThrowEError SExpr
 evalFunc env f as = case f of
-  SPrim p         -> liftThrowEError $ p as
+  SPrim p         -> p as
   f@(SFunc _ _ _) -> evalSFunc env f as
   v               -> liftThrowEError $ Left $
                        IllegalStruct $ (show v) ++ " is not a valid function"
@@ -244,6 +272,12 @@ evalValue env (SList [SAtom "lambda", SList as@((SAtom _):_), body]) =
   where toString (SAtom s) = s
 evalValue env (SList ((SAtom "lambda"):_)) =
   liftThrowEError $ Left $ IllegalStruct "lambda"
+evalValue env (SList ((SAtom "begin"):xs)) = do
+  if not $ and $ map isList xs
+  then liftThrowEError $ Left $ IllegalStruct "begin"
+  else mapM (evalValue env) xs >> return SNull
+  where isList (SList _) = True
+        isList _ = False
 evalValue env (SList xs) = do
   xs' <- mapM (evalValue env) xs
   evalFunc env (head xs') (tail xs')
