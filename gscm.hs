@@ -73,12 +73,12 @@ parseSExpr =  parseAtom
 data EvalError = ArgMismatch String
                | IllegalStruct String
                | UnknownError
-               | UnbindedVar String
+               | UnboundVar String
                | AlreadyDefined String
 instance Show EvalError where
   show (ArgMismatch m) = "Argument(s) mismatch: " ++ m
   show (IllegalStruct m) = "Illegal Struct: " ++ m
-  show (UnbindedVar m) = "Unbinded variable: " ++ m
+  show (UnboundVar m) = "Unbound variable: " ++ m
   show (AlreadyDefined m) = "Variable already defined: " ++ m
   show (UnknownError) = "Unknown error"
 
@@ -154,8 +154,8 @@ primitivesList =
 primitivesMap :: M.Map String SExpr
 primitivesMap = M.map SPrim $ M.fromList primitivesList
 
-isBinded :: Env -> String -> IO Bool
-isBinded envRef n = do
+isBound :: Env -> String -> IO Bool
+isBound envRef n = do
   env <- readIORef envRef
   return $ M.member n env
 
@@ -163,13 +163,13 @@ getVar :: Env -> String -> IOEither SExpr
 getVar envRef n = do
   env <- liftIO $ readIORef envRef
   liftEither $ case M.lookup n env of
-    Nothing -> Left $ UnbindedVar n
+    Nothing -> Left $ UnboundVar n
     Just v  -> return v
 
 defVar :: Env -> String -> SExpr -> IOEither SExpr
 defVar envRef n v = do
   env <- liftIO $ readIORef envRef
-  b <- liftIO $ isBinded envRef n
+  b <- liftIO $ isBound envRef n
   if b
   then liftEither $ Left $ AlreadyDefined n
   else liftIO $ (return $ M.insert n v env) >>= writeIORef envRef >> return v
@@ -190,6 +190,8 @@ evalValue _ v@(SBool _) = return v
 evalValue _ (SList [SAtom "quote", v]) = return v
 evalValue env (SList [SAtom "def", SAtom n, v]) =
   evalValue env v >>= defVar env n
+evalValue env (SList ((SAtom "def"):_)) =
+  liftEither $ Left $ IllegalStruct "definition"
 evalValue env (SList ((SAtom f):as)) = evalFunc env f as
 evalValue env (SList ((SPrim p):as)) = mapM (evalValue env) as >>= liftEither . p
 evalValue _ _ = liftEither $ Left $ IllegalStruct "illegal struct"
