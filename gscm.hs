@@ -77,7 +77,7 @@ parseSExpr =  parseAtom
 
 data EvalError = ArgMismatch String
                | IllegalStruct String
-               | UnknownError
+               | OtherError String
                | UnboundVar String
                | AlreadyDefined String
                | TypeMismatch String
@@ -86,8 +86,8 @@ instance Show EvalError where
   show (IllegalStruct m) = "Illegal Struct: " ++ m
   show (UnboundVar m) = "Unbound variable: " ++ m
   show (AlreadyDefined m) = "Variable already defined: " ++ m
-  show (UnknownError) = "Unknown error"
   show (TypeMismatch m) = "Type Mismatch: " ++ m
+  show (OtherError m) = m
 
 newtype EitherT a m b = EitherT { runEitherT :: m (Either a b) }
 instance Monad m => Monad (EitherT a m) where
@@ -142,8 +142,21 @@ pSub = numBinOp (-)
 pMul = numBinOp (*)
 pDiv = numBinOp div
 pMod = numBinOp mod
+
 pStringAppend [SString a, SString b] = return $ SString $ a ++ b
 pStringAppend _ = Left $ ArgMismatch "expect (string, string)"
+
+pIsNull [SList []] = return $ SBool True
+pIsNull [_] = return $ SBool False
+pIsNull _ = Left $ ArgMismatch "expect (any)"
+pCons [v, SList l] = return $ SList (v:l)
+pCons _ = Left $ ArgMismatch "expect (any, list)"
+pCar [SList (x:_)] = return x
+pCar [SList []] = Left $ OtherError "car is applied to a null list"
+pCar _ = Left $ ArgMismatch "expect (list)"
+pCdr [SList (_:xs)] = return $ SList xs
+pCdr [SList []] = Left $ OtherError "cdr is applied to a null list"
+pCdr _ = Left $ ArgMismatch "expect (list)"
 
 type PrimFunc = [SExpr] -> ThrowEError SExpr
 primitivesList :: [(String, PrimFunc)]
@@ -158,7 +171,11 @@ primitivesList =
     ("*", pMul),
     ("/", pDiv),
     ("mod", pMod),
-    ("string-append", pStringAppend)
+    ("string-append", pStringAppend),
+    ("null?", pIsNull),
+    ("cons", pCons),
+    ("car", pCar),
+    ("cdr", pCdr)
   ]
 primitivesMap :: M.Map String SExpr
 primitivesMap = M.map SPrim $ M.fromList primitivesList
@@ -198,15 +215,12 @@ evalSFunc envRef (SFunc ns body fEnv) as
      newEnvRef <- bindArgs fEnv ns as
      evalValue newEnvRef body
 
-evalFunc :: Env -> String -> [SExpr] -> IOThrowEError SExpr
-evalFunc env f as = do
-  as' <- mapM (evalValue env) as
-  v <- getVar env f
-  case v of
-    SPrim p         -> liftThrowEError $ p as'
-    f@(SFunc _ _ _) -> evalSFunc env f as'
-    _               -> liftThrowEError $ Left $
-                         TypeMismatch $ f ++ " is not a valid function"
+evalFunc :: Env -> SExpr -> [SExpr] -> IOThrowEError SExpr
+evalFunc env f as = case f of
+  SPrim p         -> liftThrowEError $ p as
+  f@(SFunc _ _ _) -> evalSFunc env f as
+  v               -> liftThrowEError $ Left $
+                       IllegalStruct $ (show v) ++ " is not a valid function"
 
 evalValue :: Env -> SExpr -> IOThrowEError SExpr
 evalValue env (SAtom s) = getVar env s
@@ -230,9 +244,9 @@ evalValue env (SList [SAtom "lambda", SList as@((SAtom _):_), body]) =
   where toString (SAtom s) = s
 evalValue env (SList ((SAtom "lambda"):_)) =
   liftThrowEError $ Left $ IllegalStruct "lambda"
-evalValue env (SList ((SAtom f):as)) = evalFunc env f as
-evalValue env (SList ((SPrim p):as)) =
-  mapM (evalValue env) as >>= liftThrowEError . p
+evalValue env (SList xs) = do
+  xs' <- mapM (evalValue env) xs
+  evalFunc env (head xs') (tail xs')
 evalValue _ _ = liftThrowEError $ Left $ IllegalStruct "illegal struct"
 
 evalAndPrint :: Env -> String -> IO ()
