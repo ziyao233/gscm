@@ -1,3 +1,10 @@
+{-
+-	gscm
+-	/gscm.hs
+-	This file is distributed under MIT License
+-	Copyright (c) 2024 Yao Zi. All rights reserved.
+-}
+
 module Main where
 
 import Control.Monad
