@@ -144,6 +144,19 @@ pMul = numBinOp (*)
 pDiv = numBinOp div
 pMod = numBinOp mod
 
+numCmpOp :: (Int -> Int -> Bool) -> [SExpr] -> ThrowEError SExpr
+numCmpOp f as = do
+  ns <- mapM extractNum as
+  if (length ns) /= 2
+  then Left $ ArgMismatch "expect (number, number)"
+  else return $ SBool $ f (ns !! 0) (ns !! 1)
+
+pEq = numCmpOp (==)
+pGt = numCmpOp (>)
+pLt = numCmpOp (<)
+pGe = numCmpOp (>=)
+pLe = numCmpOp (<=)
+
 pStringAppend [SString a, SString b] = return $ SString $ a ++ b
 pStringAppend _ = Left $ ArgMismatch "expect (string, string)"
 
@@ -188,6 +201,11 @@ purePrimitivesList =
     ("*", pMul),
     ("/", pDiv),
     ("mod", pMod),
+    ("=", pEq),
+    (">", pGt),
+    ("<", pLt),
+    (">=", pGe),
+    ("<=", pLe),
     ("string-append", pStringAppend),
     ("null?", pIsNull),
     ("cons", pCons),
@@ -274,9 +292,11 @@ evalValue env (SList [SAtom "lambda", SList as@((SAtom _):_), body]) =
 evalValue env (SList ((SAtom "lambda"):_)) =
   liftThrowEError $ Left $ IllegalStruct "lambda"
 evalValue env (SList ((SAtom "begin"):xs)) = do
+  e <- liftIO $ readIORef env
+  newEnv <- liftIO $ newIORef e
   if not $ and $ map isList xs
   then liftThrowEError $ Left $ IllegalStruct "begin"
-  else mapM (evalValue env) xs >> return SNull
+  else mapM (evalValue newEnv) xs >>= return . last
   where isList (SList _) = True
         isList _ = False
 evalValue env (SList xs) = do
