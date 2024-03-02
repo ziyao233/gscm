@@ -17,6 +17,7 @@ data SExpr = SAtom String
            | SString String
            | SBool Bool
            | SPrim PrimFunc
+           | SNull
 
 instance Show SExpr where
   show (SAtom xs)     = xs
@@ -26,6 +27,7 @@ instance Show SExpr where
   show (SBool True)   = "#t"
   show (SBool False)  = "#f"
   show (SPrim _)      = "<primitive>"
+  show SNull          = "(null)"
 
 spaces :: Parser ()
 spaces = skipMany1 $ oneOf "\r\n\t "
@@ -75,12 +77,14 @@ data EvalError = ArgMismatch String
                | UnknownError
                | UnboundVar String
                | AlreadyDefined String
+               | TypeMismatch String
 instance Show EvalError where
   show (ArgMismatch m) = "Argument(s) mismatch: " ++ m
   show (IllegalStruct m) = "Illegal Struct: " ++ m
   show (UnboundVar m) = "Unbound variable: " ++ m
   show (AlreadyDefined m) = "Variable already defined: " ++ m
   show (UnknownError) = "Unknown error"
+  show (TypeMismatch m) = "Type Mismatch: " ++ m
 
 newtype EitherT a m b = EitherT { runEitherT :: m (Either a b) }
 instance Monad m => Monad (EitherT a m) where
@@ -182,7 +186,7 @@ evalFunc env f as = do
   v <- getVar env f
   liftThrowEError $ case v of
     SPrim p -> p as'
-    _       -> Left $ IllegalStruct $ f ++ " is not a valid function"
+    _       -> Left $ TypeMismatch $ f ++ " is not a valid function"
 
 evalValue :: Env -> SExpr -> IOThrowEError SExpr
 evalValue env (SAtom s) = getVar env s
@@ -191,9 +195,16 @@ evalValue _ v@(SString _) = return v
 evalValue _ v@(SBool _) = return v
 evalValue _ (SList [SAtom "quote", v]) = return v
 evalValue env (SList [SAtom "def", SAtom n, v]) =
-  evalValue env v >>= defVar env n
+  evalValue env v >>= defVar env n >> return SNull
 evalValue env (SList ((SAtom "def"):_)) =
   liftThrowEError $ Left $ IllegalStruct "definition"
+evalValue env (SList [SAtom "if", cond, t, f]) =
+  do r <- evalValue env cond
+     case r of
+       SBool False -> evalValue env f
+       otherwise   -> evalValue env t
+evalValue env (SList ((SAtom "if"):_)) =
+  liftThrowEError $ Left $ IllegalStruct "if"
 evalValue env (SList ((SAtom f):as)) = evalFunc env f as
 evalValue env (SList ((SPrim p):as)) =
   mapM (evalValue env) as >>= liftThrowEError . p
